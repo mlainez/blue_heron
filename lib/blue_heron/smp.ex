@@ -30,6 +30,7 @@ defmodule BlueHeron.SMP do
     :stk_used,
     :authenticated,
     :io_handler,
+    :io_capability,
     :key_manager
   ]
 
@@ -79,6 +80,7 @@ defmodule BlueHeron.SMP do
   @impl GenServer
   def init(args) do
     io_handler = Keyword.get(args, :io_handler, @default_io_handler)
+    io_capability = Keyword.get(args, :io_capability, :display_yes_no)
     :ok = BlueHeron.Registry.subscribe()
 
     with {:ok, keyfile} <- io_handler.keyfile(),
@@ -88,7 +90,8 @@ defmodule BlueHeron.SMP do
          ready?: false,
          key_manager: key_manager,
          authenticated: false,
-         io_handler: io_handler
+         io_handler: io_handler,
+         io_capability: io_capability
        }}
     end
   end
@@ -126,19 +129,11 @@ defmodule BlueHeron.SMP do
     # TODO: Filter requests not matching parameters
     # Check max_key = 16
 
-    passkey = :rand.uniform(999_999)
-
-    message =
-      passkey
-      |> Integer.to_string()
-      |> String.pad_leading(6, "0")
-
-    _ = state.io_handler.status_update(:passkey)
-    _ = state.io_handler.passkey(message)
+    {io_capability, auth_req, passkey} = pairing_method(state)
 
     k = <<passkey::integer-size(128)>>
     r = :crypto.strong_rand_bytes(16)
-    response = <<0x02, 0x01, 0x00, 0b00000101, 16, 0x0F, 0x0F>>
+    response = <<0x02, io_capability, 0x00, auth_req, 16, 0x0F, 0x0F>>
 
     # Set up all pairing related information
     pairing = %{
@@ -413,6 +408,28 @@ defmodule BlueHeron.SMP do
   """
   def h6(w, key_id) do
     :crypto.mac(:cmac, :aes_cbc, w, key_id)
+  end
+
+  # Legacy pairing. `:display_yes_no` shows a passkey through the IO handler
+  # for the central to type in (MITM protection). `:no_input_no_output`
+  # selects Just Works: no passkey (TK = 0) and no MITM protection, for
+  # devices without a screen the user can read.
+  defp pairing_method(%{io_capability: :no_input_no_output}) do
+    {0x03, 0b00000001, 0}
+  end
+
+  defp pairing_method(state) do
+    passkey = :rand.uniform(999_999)
+
+    message =
+      passkey
+      |> Integer.to_string()
+      |> String.pad_leading(6, "0")
+
+    _ = state.io_handler.status_update(:passkey)
+    _ = state.io_handler.passkey(message)
+
+    {0x01, 0b00000101, passkey}
   end
 
   defp reply_for_ltk_request(request, _ediv, nil) do
