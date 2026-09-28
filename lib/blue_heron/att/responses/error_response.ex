@@ -20,6 +20,7 @@ defmodule BlueHeron.ATT.ErrorResponse do
 
   defp serialize_error(:insufficient_authentication), do: 0x05
   defp serialize_error(:attribute_not_found), do: 0x0A
+  defp serialize_error(:unsupported_group_type), do: 0x10
 
   def deserialize(<<0x01, request_opcode, handle::little-16, error>>) do
     %__MODULE__{
@@ -32,5 +33,6 @@ defmodule BlueHeron.ATT.ErrorResponse do
 
   defp deserialize_error(0x05), do: :insufficient_authentication
   defp deserialize_error(0x0A), do: :attribute_not_found
+  defp deserialize_error(0x10), do: :unsupported_group_type
   defp deserialize_error(code), do: code
 end

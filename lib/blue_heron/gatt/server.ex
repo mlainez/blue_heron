@@ -97,6 +97,7 @@ defmodule BlueHeron.GATT.Server do
   defstruct [:profile, :mtu, :read_buffer, :write_requests]
 
   @discover_all_primary_services 0x2800
+  @discover_all_secondary_services 0x2801
   @find_included_services 0x2802
   @discover_all_characteristics 0x2803
   @cccd 0x2902
@@ -131,6 +132,24 @@ defmodule BlueHeron.GATT.Server do
 
       %ReadByGroupTypeRequest{uuid: @discover_all_primary_services} ->
         discover_all_primary_services(state, request)
+
+      # Every request needs a response, or the client waits for the 30 s
+      # ATT timeout and disconnects. Services are always primary.
+      %ReadByGroupTypeRequest{uuid: @discover_all_secondary_services} ->
+        {state,
+         %ErrorResponse{
+           handle: request.starting_handle,
+           request_opcode: request.opcode,
+           error: :attribute_not_found
+         }}
+
+      %ReadByGroupTypeRequest{} ->
+        {state,
+         %ErrorResponse{
+           handle: request.starting_handle,
+           request_opcode: request.opcode,
+           error: :unsupported_group_type
+         }}
 
       %ReadByTypeRequest{uuid: @find_included_services} ->
         find_included_services(state, request)
