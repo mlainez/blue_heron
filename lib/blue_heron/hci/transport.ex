@@ -144,8 +144,11 @@ defmodule BlueHeron.HCI.Transport do
 
   @impl GenServer
   def init(args) do
+    {transport_mod, args} = transport_module(args)
+
     state = %{
       transport: nil,
+      transport_mod: transport_mod,
       transport_init_backoff_ms: @default_transport_init_backoff_ms,
       transport_init_timer: nil,
       setup_commands: @default_setup_commands,
@@ -162,7 +165,7 @@ defmodule BlueHeron.HCI.Transport do
 
   @impl GenServer
   def handle_info({:initialize_transport, args}, state) do
-    case BlueHeron.HCI.Transport.UART.start_link(args) do
+    case state.transport_mod.start_link(args) do
       {:ok, pid} ->
         Logger.info("Initialized HCI Transport: #{inspect(pid)}")
         {:noreply, %{state | transport: pid}, {:continue, :setup_transport}}
@@ -196,8 +199,8 @@ defmodule BlueHeron.HCI.Transport do
       nil ->
         Logger.warning("Setup command timeout: #{inspect(state.current)}")
         hci_bin = serialize(state.current)
-        :ok = BlueHeron.HCI.Transport.UART.flush(state.transport)
-        :ok = BlueHeron.HCI.Transport.UART.send_command(state.transport, hci_bin)
+        :ok = state.transport_mod.flush(state.transport)
+        :ok = state.transport_mod.send_command(state.transport, hci_bin)
         timer = Process.send_after(self(), :current_timeout, 5000)
         {:noreply, %{new_state | current_timer: timer}}
 
@@ -212,7 +215,7 @@ defmodule BlueHeron.HCI.Transport do
   def handle_continue(:setup_transport, %{setup_commands: [command | rest]} = state) do
     new_state = cancel_timer(state)
     hci_bin = serialize(command)
-    :ok = BlueHeron.HCI.Transport.UART.send_command(new_state.transport, hci_bin)
+    :ok = new_state.transport_mod.send_command(new_state.transport, hci_bin)
     timer = Process.send_after(self(), :current_timeout, 5000)
     {:noreply, %{new_state | setup_commands: rest, current: command, current_timer: timer}}
   end
@@ -309,7 +312,7 @@ defmodule BlueHeron.HCI.Transport do
         %{setup_complete: true, current: nil, caller: nil} = state
       ) do
     hci_bin = serialize(command)
-    :ok = BlueHeron.HCI.Transport.UART.send_command(state.transport, hci_bin)
+    :ok = state.transport_mod.send_command(state.transport, hci_bin)
     timer = Process.send_after(self(), :current_timeout, 5000)
     {:noreply, %{state | current: command, current_timer: timer, caller: from}}
   end
@@ -320,7 +323,7 @@ defmodule BlueHeron.HCI.Transport do
         %{setup_complete: true} = state
       ) do
     acl_bin = BlueHeron.ACL.serialize(acl)
-    :ok = BlueHeron.HCI.Transport.UART.send_acl(state.transport, acl_bin)
+    :ok = state.transport_mod.send_acl(state.transport, acl_bin)
     {:reply, :ok, state}
   end
 
@@ -330,6 +333,16 @@ defmodule BlueHeron.HCI.Transport do
 
   def handle_call(_call, _from, %{setup_complete: false} = state) do
     {:reply, {:error, :setup_incomplete}, state}
+  end
+
+  # `type: :uart` (the default) drives a controller over a serial port;
+  # `type: :hci_socket` uses a controller the Linux kernel already exposes
+  # as an hciN device.
+  defp transport_module(args) do
+    case Keyword.pop(args, :type, :uart) do
+      {:uart, args} -> {BlueHeron.HCI.Transport.UART, args}
+      {:hci_socket, args} -> {BlueHeron.HCI.Transport.HCISocket, args}
+    end
   end
 
   defp cancel_timer(state) do
