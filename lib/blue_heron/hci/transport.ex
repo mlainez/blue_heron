@@ -113,7 +113,9 @@ defmodule BlueHeron.HCI.Transport do
     %ControllerAndBaseband.WriteLocalName{name: @default_name},
     %ControllerAndBaseband.WriteInquiryMode{inquiry_mode: 0x0},
     %ControllerAndBaseband.WriteSecureConnectionsHostSupport{enabled: false},
-    %ControllerAndBaseband.WriteScanEnable{scan_enable: 0x01},
+    # No inquiry or page scan: BlueHeron is LE only, and answering BR/EDR
+    # inquiries makes dual-mode hosts try (and fail) BR/EDR service discovery.
+    %ControllerAndBaseband.WriteScanEnable{scan_enable: 0x00},
     %ControllerAndBaseband.WriteDefaultErroneousDataReporting{enabled: true},
     %LEController.ReadBufferSizeV1{},
     %ControllerAndBaseband.WriteLEHostSupport{le_supported_host_enabled: true},
