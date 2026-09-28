@@ -124,16 +124,21 @@ defmodule BlueHeron.SMP do
 
   def handle_call({:handle, <<0x01, data::binary>>}, _from, state) do
     # Pairing Request
-    <<_io, _obb, _auth, _max_key, _idist, _rdist>> = data
+    <<_io, _obb, _auth, _max_key, idist, rdist>> = data
 
     # TODO: Filter requests not matching parameters
     # Check max_key = 16
 
     {io_capability, auth_req, passkey} = pairing_method(state)
 
+    # A responder may only keep key distribution bits the initiator set.
+    # EncKey, IdKey and Sign are supported; LinkKey needs Secure Connections.
+    idist = Bitwise.band(idist, 0x07)
+    rdist = Bitwise.band(rdist, 0x07)
+
     k = <<passkey::integer-size(128)>>
     r = :crypto.strong_rand_bytes(16)
-    response = <<0x02, io_capability, 0x00, auth_req, 16, 0x0F, 0x0F>>
+    response = <<0x02, io_capability, 0x00, auth_req, 16, idist, rdist>>
 
     # Set up all pairing related information
     pairing = %{
@@ -142,7 +147,8 @@ defmodule BlueHeron.SMP do
       k: k,
       ir: nil,
       r: r,
-      confirm: nil
+      confirm: nil,
+      rdist: rdist
     }
 
     {:reply, response, %{state | pairing: pairing, authenticated: false}}
@@ -287,25 +293,26 @@ defmodule BlueHeron.SMP do
        irk::bytes-size(16)
      >>} = KeyManager.new(state.key_manager)
 
-    # generate and send LTK using "Encryption Information" ACL message
-    frame = acl(event.connection_handle, <<0x06>> <> reverse(ltk))
-    :ok = BlueHeron.HCI.Transport.buffer_acl(frame)
+    # Send only the key groups agreed in the Pairing Response.
+    rdist = state.pairing.rdist
 
-    # generate and send EDIV and RAND using "Central Identification" ACL message
-    frame = acl(event.connection_handle, <<0x07, ediv::little-16>> <> reverse(rand))
-    :ok = BlueHeron.HCI.Transport.buffer_acl(frame)
+    messages =
+      [
+        # EncKey: LTK ("Encryption Information"), then EDIV and RAND
+        # ("Central Identification")
+        {0x01, <<0x06>> <> reverse(ltk)},
+        {0x01, <<0x07, ediv::little-16>> <> reverse(rand)},
+        # IdKey: IRK ("Identity Information"), then BD_ADDR
+        # ("Identity Address Information")
+        {0x02, <<0x08>> <> reverse(irk)},
+        {0x02, <<0x09, 0>> <> reverse(state.bd_address.binary)},
+        # Sign: CSRK ("Signing Information")
+        {0x04, <<0x0A>> <> reverse(csrk)}
+      ]
 
-    # generate and send IRK using "Identity Information" ACL message
-    frame = acl(event.connection_handle, <<0x08>> <> reverse(irk))
-    :ok = BlueHeron.HCI.Transport.buffer_acl(frame)
-
-    # generate and send BD_ADDRESS using "Identity Address Information" ACL message
-    frame = acl(event.connection_handle, <<0x09, 0>> <> reverse(state.bd_address.binary))
-    :ok = BlueHeron.HCI.Transport.buffer_acl(frame)
-
-    # generate and send CSRK using "Signing Information" ACL message
-    frame = acl(event.connection_handle, <<0x0A>> <> reverse(csrk))
-    :ok = BlueHeron.HCI.Transport.buffer_acl(frame)
+    for {bit, message} <- messages, Bitwise.band(rdist, bit) != 0 do
+      :ok = BlueHeron.HCI.Transport.buffer_acl(acl(event.connection_handle, message))
+    end
 
     {:reply, :ok, %{state | authenticated: true}}
   end
